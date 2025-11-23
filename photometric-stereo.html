@@ -121,6 +121,8 @@
                 <button id="btn-save-norm" style="flex:1;" disabled>Save Normal</button>
                 <button id="btn-save-alb" style="flex:1;" disabled>Save Albedo</button>
             </div>
+            <button id="btn-save-rough" style="margin-top: 8px;" disabled>Save Roughness</button>
+
             <button id="btn-snapshot" style="margin-top: 8px;" disabled>Take Snapshot</button>
         </div>
     </div>
@@ -134,7 +136,7 @@
     const inputs = [null, null, null, null]; 
     let renderer, scene, camera, controls, planeMesh;
     let pointLight, ambientLight;
-    let generatedNormalMap, generatedAlbedoMap, generatedAlbedoMapGray;
+    let generatedNormalMap, generatedAlbedoMap, generatedAlbedoMapGray, generatedRoughnessMap;
     let contentAspect = 1.0;
     let isLightFrozen = false;
     let isColor = true;
@@ -455,11 +457,49 @@
         renderer.render(bakeScene, bakeCam);
         generatedAlbedoMapGray = rtAlbGray.texture;
 
+        // Roughness Map (trying this)
+        quad.material = new THREE.ShaderMaterial({
+            uniforms: { uN:{value:tex[0]}, uS:{value:tex[1]}, uE:{value:tex[2]}, uW:{value:tex[3]} },
+            vertexShader: `varying vec2 vUv; void main() { vUv=uv; gl_Position=vec4(position,1.0); }`,
+            fragmentShader: `
+                uniform sampler2D uN, uS, uE, uW;
+                varying vec2 vUv;
+                void main() {
+                    // Same as normal map, get everything to average intensity.
+                    vec3 k = vec3(1.0 / 3.0);
+                    float n = dot(texture2D(uN, vUv).rgb, k);
+                    float s = dot(texture2D(uS, vUv).rgb, k);
+                    float e = dot(texture2D(uE, vUv).rgb, k);
+                    float w = dot(texture2D(uW, vUv).rgb, k);
+                    
+                    // Estimate how reflective a thing is by the difference
+                    // between the average shiny and the maximum shiny.
+                    // Specularity = Max Brightness - Average Brightness
+                    float mean = (n + s + e + w) / 4.0;
+                    float maxVal = max(n, max(s, max(e, w)));
+                    
+                    // Little multiplier to make it more dramatic.
+                    float spec = (maxVal - mean) * 2.5; 
+                    spec = clamp(spec, 0.0, 1.0);
+
+                    // We have shininess, so flip it because this is a roughness
+                    // map.
+                    float roughness = 1.0 - spec;
+                    gl_FragColor = vec4(vec3(roughness), 1.0);
+                }
+            `
+        });
+        const rtRough = new THREE.WebGLRenderTarget(width, height, renderTargetOpts);
+        renderer.setRenderTarget(rtRough);
+        renderer.render(bakeScene, bakeCam);
+        generatedRoughnessMap = rtRough.texture;
+
         renderer.setRenderTarget(null);
 
         isColor = true;
         material.map = generatedAlbedoMap; 
         material.normalMap = generatedNormalMap;
+        material.roughnessMap = generatedRoughnessMap;
         material.normalScale.set(2, 2);
         material.needsUpdate = true;
 
@@ -470,6 +510,7 @@
 
         document.getElementById('btn-save-norm').disabled = false;
         document.getElementById('btn-save-alb').disabled = false;
+        document.getElementById('btn-save-rough').disabled = false;
         document.getElementById('btn-toggle-color').disabled = false;
         document.getElementById('btn-snapshot').disabled = false;
         showLoader(false);
@@ -511,6 +552,9 @@
         const t = isColor ? generatedAlbedoMap : generatedAlbedoMapGray;
         t.colorSpace = THREE.SRGBColorSpace;
         saveTexture(t, 'albedo_map.png');
+    });
+    document.getElementById('btn-save-rough').addEventListener('click', () => {
+        saveTexture(generatedRoughnessMap, 'roughness_map.png');
     });
 
 </script>
