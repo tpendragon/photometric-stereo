@@ -406,7 +406,11 @@
                     // south.
                     // NOTE: This math only works because our lights are at 45
                     // degrees w/ Selene. It's much more complex otherwise.
-                    vec3 N = vec3(e-w, s-n, 1.0);
+                    // Calculate Z based on total intensity to cancel out Albedo
+                    float z = (n + s + e + w) / 2.0;
+                    // Protect against division by zero (black pixels) by clamping Z
+                    z = max(z, 0.05); 
+                    vec3 N = vec3(e-w, s-n, z);
                     // Normalize vector to length 1, then scale it from -1 to 1
                     // (unit vector domain) to 0 to 1 (color domain)
                     gl_FragColor = vec4(normalize(N)*0.5+0.5, 1.0);
