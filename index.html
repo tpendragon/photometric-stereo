@@ -168,8 +168,8 @@
         roughness: 1.0,
         metalness: 0.0,
         // Make normal scale 5 to start, just to dramaticize the depth for
-        // better shadows.
-        normalScale: new THREE.Vector2(5, 5)
+        // better shadows. Use negative Y to flip the normal map.
+        normalScale: new THREE.Vector2(5, -5)
     });
     
     const geometry = new THREE.PlaneGeometry(1, 1);
@@ -196,7 +196,7 @@
     };
 
     gui.add(params, 'roughness', 0, 1).onChange(v => material.roughness = v);
-    gui.add(params, 'normalScale', 0, 5).name('Relief Depth').onChange(v => material.normalScale.set(v, v));
+    gui.add(params, 'normalScale', 0, 5).name('Relief Depth').onChange(v => material.normalScale.set(v, -v));
     const folderLight = gui.addFolder('Raking Light');
     folderLight.add(params, 'lightIntensity', 0, 5).onChange(v => pointLight.intensity = v);
     folderLight.add(params, 'lightZ', 0.05, 2.0).name('Light Height').onChange(v => {
@@ -244,9 +244,10 @@
         // yay geometry.
         const visibleHeight = 2 * Math.tan(vFov / 2) * dist;
         const visibleWidth = visibleHeight * (window.innerWidth / window.innerHeight);
-        const radius = Math.min(visibleWidth, visibleHeight) * 0.6; 
-        pointLight.position.x = Math.cos(angle) * radius + camera.position.x;
-        pointLight.position.y = Math.sin(angle) * radius + camera.position.y;
+        const radius = Math.min(visibleWidth, visibleHeight) * 0.6;
+        // Use controls.target to orbit around the current view center (zoomed/panned area)
+        pointLight.position.x = Math.cos(angle) * radius + controls.target.x;
+        pointLight.position.y = Math.sin(angle) * radius + controls.target.y;
         pointLight.position.z = params.lightZ;
     });
 
@@ -518,7 +519,7 @@
         material.map = generatedAlbedoMap;
         material.normalMap = generatedNormalMap;
         material.roughnessMap = generatedRoughnessMap;
-        material.normalScale.set(params.normalScale, params.normalScale);
+        material.normalScale.set(params.normalScale, -params.normalScale);
         material.needsUpdate = true;
 
         const aspect = width / height;
@@ -802,7 +803,7 @@
         // Don't set a roughness map since we don't have one from IIIF
         material.roughnessMap = null;
         material.roughness = 1.0;
-        material.normalScale.set(params.normalScale, params.normalScale);
+        material.normalScale.set(params.normalScale, -params.normalScale);
         material.needsUpdate = true;
 
         console.log('Material updated with maps');
