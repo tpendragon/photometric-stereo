@@ -167,9 +167,9 @@
         color: 0xffffff,
         roughness: 1.0,
         metalness: 0.0,
-        // Make normal scale 2 to start, just to dramaticize the depth for
+        // Make normal scale 5 to start, just to dramaticize the depth for
         // better shadows.
-        normalScale: new THREE.Vector2(2, 2)
+        normalScale: new THREE.Vector2(5, 5)
     });
     
     const geometry = new THREE.PlaneGeometry(1, 1);
@@ -181,18 +181,18 @@
     scene.add(ambientLight);
 
     // Moving mouse around should make a point light that can be frozen.
-    pointLight = new THREE.PointLight(0xfff0dd, 3.0); 
-    pointLight.decay = 0; 
-    pointLight.position.set(-1.5, 1.5, 0.5);
+    pointLight = new THREE.PointLight(0xfff0dd, 3.0);
+    pointLight.decay = 0;
+    pointLight.position.set(-1.5, 1.5, 0.2);
     scene.add(pointLight);
 
     // Sliders. Use lil-gui, thanks three.js.
     const gui = new GUI({ title: 'Studio Settings' });
     const params = {
         roughness: 1.0,
-        normalScale: 2.0,
+        normalScale: 5.0,
         lightIntensity: 3.0,
-        lightZ: 0.5
+        lightZ: 0.2
     };
 
     gui.add(params, 'roughness', 0, 1).onChange(v => material.roughness = v);
@@ -271,7 +271,21 @@
     window.addEventListener('dragleave', (e) => { if (!e.relatedTarget) overlay.classList.remove('active'); });
     window.addEventListener('dragover', e => e.preventDefault());
     window.addEventListener('drop', (e) => {
-        e.preventDefault(); overlay.classList.remove('active'); handleFiles(e.dataTransfer.files);
+        e.preventDefault(); overlay.classList.remove('active');
+        // Check if it's a IIIF manifest link
+        const html = e.dataTransfer.getData('text/html');
+        const plainText = e.dataTransfer.getData('text/plain');
+        const uriList = e.dataTransfer.getData('text/uri-list');
+
+        console.log('Drop detected:', { html: html.substring(0, 200), plainText, uriList });
+
+        const manifestUrl = extractManifestUrl(html, plainText, uriList);
+        if (manifestUrl) {
+            console.log('Loading from manifest:', manifestUrl);
+            loadFromManifest(manifestUrl);
+        } else {
+            handleFiles(e.dataTransfer.files);
+        }
     });
     document.querySelectorAll('input[type=file]').forEach(inp => {
         inp.addEventListener('change', (e) => {
@@ -501,10 +515,10 @@
         renderer.setRenderTarget(null);
 
         isColor = true;
-        material.map = generatedAlbedoMap; 
+        material.map = generatedAlbedoMap;
         material.normalMap = generatedNormalMap;
         material.roughnessMap = generatedRoughnessMap;
-        material.normalScale.set(2, 2);
+        material.normalScale.set(params.normalScale, params.normalScale);
         material.needsUpdate = true;
 
         const aspect = width / height;
@@ -560,6 +574,276 @@
     document.getElementById('btn-save-rough').addEventListener('click', () => {
         saveTexture(generatedRoughnessMap, 'roughness_map.png');
     });
+
+    // IIIF Manifest Support
+    function updateUrlWithManifest(manifestUrl) {
+        const url = new URL(window.location);
+        url.searchParams.set('manifest', manifestUrl);
+        window.history.pushState({}, '', url);
+        console.log('URL updated for sharing:', url.toString());
+    }
+
+    function extractManifestUrl(html, plainText, uriList) {
+        // Try to find manifest URL in various formats
+
+        // First try uri-list (most reliable)
+        if (uriList && uriList.includes('/manifest')) {
+            return uriList.split('\n')[0].trim();
+        }
+
+        // Try plain text URL
+        if (plainText && plainText.includes('/manifest')) {
+            // Extract URL from plain text
+            const urlMatch = plainText.match(/(https?:\/\/[^\s]+\/manifest[^\s]*)/);
+            if (urlMatch) return urlMatch[1];
+        }
+
+        // Try HTML href attribute
+        if (html) {
+            const match = html.match(/href=["']([^"']*\/manifest[^"']*)["']/);
+            if (match) return match[1];
+        }
+
+        return null;
+    }
+
+    async function loadFromManifest(manifestUrl) {
+        showLoader(true);
+        try {
+            const response = await fetch(manifestUrl, {
+                credentials: 'include', // Include cookies for authentication
+                mode: 'cors'
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            const manifest = await response.json();
+            await loadImagesFromManifest(manifest, manifestUrl);
+        } catch (error) {
+            console.error('Error loading manifest:', error);
+            alert('Failed to load IIIF manifest: ' + error.message);
+            showLoader(false);
+        }
+    }
+
+    async function loadImagesFromManifest(manifest, manifestUrl) {
+        console.log('Manifest loaded:', manifest);
+
+        // Find canvases with labels containing "normal_m1" and "albedo_m1"
+        const canvases = manifest.sequences?.[0]?.canvases || [];
+        console.log('Found canvases:', canvases.map(c => c.label));
+
+        // Match labels that start with these terms
+        // Prefer exact matches, but fall back to prefix matches
+        const normalCandidates = canvases.filter(c =>
+            c.label && c.label.toLowerCase().startsWith('normal_m1')
+        );
+        const albedoCandidates = canvases.filter(c =>
+            c.label && c.label.toLowerCase().startsWith('albedo_m1')
+        );
+
+        // Prefer exact match, then shortest label (least processing), then first
+        const normalCanvas = normalCandidates.find(c => c.label === 'normal_m1') ||
+                            normalCandidates.sort((a, b) => a.label.length - b.label.length)[0];
+        const albedoCanvas = albedoCandidates.find(c => c.label === 'albedo_m1') ||
+                            albedoCandidates.sort((a, b) => a.label.length - b.label.length)[0];
+
+        if (!normalCanvas || !albedoCanvas) {
+            const msg = 'Could not find normal_m1 and albedo_m1 canvases in manifest.\n\n' +
+                       'Found canvases:\n' + canvases.map(c => '  - ' + c.label).join('\n') +
+                       '\n\nLooking for labels starting with "normal_m1" and "albedo_m1"';
+            alert(msg);
+            showLoader(false);
+            return;
+        }
+
+        console.log('Using normal canvas:', normalCanvas.label);
+        console.log('Using albedo canvas:', albedoCanvas.label);
+
+        // Extract IIIF Image API base URLs
+        const normalServiceUrl = normalCanvas.images?.[0]?.resource?.service?.['@id'];
+        const albedoServiceUrl = albedoCanvas.images?.[0]?.resource?.service?.['@id'];
+
+        if (!normalServiceUrl || !albedoServiceUrl) {
+            alert('Could not find image service URLs in manifest');
+            showLoader(false);
+            return;
+        }
+
+        console.log('Normal service URL:', normalServiceUrl);
+        console.log('Albedo service URL:', albedoServiceUrl);
+
+        // Load images using IIIF Image API
+        // Use a reasonable size that fits within MAX_TEXTURE_SIZE
+        const size = `!${MAX_TEXTURE_SIZE},${MAX_TEXTURE_SIZE}`;
+        const normalUrl = `${normalServiceUrl}/full/${size}/0/default.png`;
+        const albedoUrl = `${albedoServiceUrl}/full/${size}/0/default.png`;
+
+        console.log('Loading normal from:', normalUrl);
+        console.log('Loading albedo from:', albedoUrl);
+
+        try {
+            const [normalImg, albedoImg] = await Promise.all([
+                loadImageFromUrl(normalUrl),
+                loadImageFromUrl(albedoUrl)
+            ]);
+
+            console.log('Images loaded successfully');
+            console.log('Normal image size:', normalImg.width, 'x', normalImg.height);
+            console.log('Albedo image size:', albedoImg.width, 'x', albedoImg.height);
+
+            // Apply the loaded images to the material
+            applyPreGeneratedMaps(normalImg, albedoImg);
+
+            // Update URL for sharing
+            if (manifestUrl) {
+                updateUrlWithManifest(manifestUrl);
+            }
+
+            showLoader(false);
+        } catch (error) {
+            console.error('Error loading images:', error);
+            alert('Failed to load images from manifest: ' + error.message);
+            showLoader(false);
+        }
+    }
+
+    async function loadImageFromUrl(url) {
+        try {
+            // First try to fetch as a blob with credentials
+            const response = await fetch(url, {
+                credentials: 'include',
+                mode: 'cors'
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const blob = await response.blob();
+            const objectUrl = URL.createObjectURL(blob);
+
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => {
+                    URL.revokeObjectURL(objectUrl); // Clean up
+                    resolve(img);
+                };
+                img.onerror = () => {
+                    URL.revokeObjectURL(objectUrl); // Clean up
+                    reject(new Error(`Failed to load image: ${url}`));
+                };
+                img.src = objectUrl;
+            });
+        } catch (error) {
+            // If fetch with credentials fails, fall back to direct image load without credentials
+            console.warn('Fetch with credentials failed, trying without:', error);
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.onload = () => resolve(img);
+                img.onerror = () => reject(new Error(`Failed to load image: ${url}`));
+                img.src = url;
+            });
+        }
+    }
+
+    function applyPreGeneratedMaps(normalImg, albedoImg) {
+        console.log('Applying pre-generated maps');
+
+        // Create canvases for the images
+        const normalCanvas = document.createElement('canvas');
+        const albedoCanvas = document.createElement('canvas');
+
+        scaleToCanvas(normalImg, normalCanvas);
+        scaleToCanvas(albedoImg, albedoCanvas);
+
+        console.log('Canvas sizes - Normal:', normalCanvas.width, 'x', normalCanvas.height,
+                    'Albedo:', albedoCanvas.width, 'x', albedoCanvas.height);
+
+        // Create Three.js textures
+        const normalTexture = new THREE.CanvasTexture(normalCanvas);
+        // Normal maps should use Linear color space (no gamma correction)
+        normalTexture.colorSpace = THREE.NoColorSpace;
+        normalTexture.minFilter = THREE.LinearFilter;
+        normalTexture.magFilter = THREE.LinearFilter;
+
+        const albedoTexture = new THREE.CanvasTexture(albedoCanvas);
+        albedoTexture.colorSpace = THREE.LinearSRGBColorSpace;
+        albedoTexture.minFilter = THREE.LinearFilter;
+        albedoTexture.magFilter = THREE.LinearFilter;
+
+        // Create grayscale version of albedo
+        const albedoGrayCanvas = document.createElement('canvas');
+        albedoGrayCanvas.width = albedoCanvas.width;
+        albedoGrayCanvas.height = albedoCanvas.height;
+        const ctx = albedoGrayCanvas.getContext('2d');
+        ctx.drawImage(albedoCanvas, 0, 0);
+        const imageData = ctx.getImageData(0, 0, albedoGrayCanvas.width, albedoGrayCanvas.height);
+        for (let i = 0; i < imageData.data.length; i += 4) {
+            const gray = imageData.data[i] * 0.299 + imageData.data[i+1] * 0.587 + imageData.data[i+2] * 0.114;
+            imageData.data[i] = imageData.data[i+1] = imageData.data[i+2] = gray;
+        }
+        ctx.putImageData(imageData, 0, 0);
+
+        const albedoGrayTexture = new THREE.CanvasTexture(albedoGrayCanvas);
+        albedoGrayTexture.colorSpace = THREE.LinearSRGBColorSpace;
+        albedoGrayTexture.minFilter = THREE.LinearFilter;
+        albedoGrayTexture.magFilter = THREE.LinearFilter;
+
+        // Apply to material
+        generatedNormalMap = normalTexture;
+        generatedAlbedoMap = albedoTexture;
+        generatedAlbedoMapGray = albedoGrayTexture;
+
+        isColor = true;
+        material.map = generatedAlbedoMap;
+        material.normalMap = generatedNormalMap;
+        // Don't set a roughness map since we don't have one from IIIF
+        material.roughnessMap = null;
+        material.roughness = 1.0;
+        material.normalScale.set(params.normalScale, params.normalScale);
+        material.needsUpdate = true;
+
+        console.log('Material updated with maps');
+        console.log('Albedo map:', material.map);
+        console.log('Normal map:', material.normalMap);
+        console.log('Normal scale:', material.normalScale);
+
+        const aspect = normalCanvas.width / normalCanvas.height;
+        contentAspect = aspect;
+        planeMesh.scale.set(aspect, 1, 1);
+        autoFrameCamera();
+
+        console.log('Camera framed, aspect ratio:', aspect);
+
+        document.getElementById('btn-save-norm').disabled = false;
+        document.getElementById('btn-save-alb').disabled = false;
+        document.getElementById('btn-toggle-color').disabled = false;
+        document.getElementById('btn-snapshot').disabled = false;
+        // Roughness map is not available when loading from manifest
+        document.getElementById('btn-save-rough').disabled = true;
+
+        console.log('IIIF maps loaded and applied successfully!');
+    }
+
+    // Check for manifest URL parameter on page load
+    function checkUrlParams() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const manifestUrl = urlParams.get('manifest');
+        console.log('Checking URL params:', { manifestUrl });
+        if (manifestUrl) {
+            console.log('Auto-loading manifest from URL parameter');
+            loadFromManifest(decodeURIComponent(manifestUrl));
+        }
+    }
+
+    // Use both DOMContentLoaded and a timeout to ensure it runs
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', checkUrlParams);
+    } else {
+        checkUrlParams();
+    }
 
 </script>
 </body>
